@@ -284,6 +284,72 @@ describe("AccountRunnerScheduler JIT cache assignments", () => {
     });
   });
 
+  it("records a JIT runner's billed lifetime when its container stops", async () => {
+    const scheduler = env.RUNNER_SCHEDULER.getByName("jit-runner-lifetime");
+    const queuedJob = job("960", "cf-standard-3-job-960", "refs/pull/960/merge");
+
+    await scheduler.submit(queuedJob);
+    await provisionRunner(scheduler, queuedJob.jobId, queuedJob.runnerName, 9_601);
+    await scheduler.runnerStarted(queuedJob.runnerName);
+    await scheduler.runnerStopped(queuedJob.runnerName, { exitCode: 0, reason: "job done" });
+
+    await runInDurableObject(scheduler, async (_instance, state) => {
+      // SAFETY: the query selects exactly this column and every row carries it.
+      const stoppedAt = state.storage.sql
+        .exec(`SELECT stopped_at FROM scheduler_jit_runners WHERE runner_name = ?`, queuedJob.runnerName)
+        .toArray()[0] as { stopped_at: number | null };
+      expect(stoppedAt.stopped_at).not.toBeNull();
+      // SAFETY: the query selects exactly this column and every row carries it.
+      const events = state.storage.sql
+        .exec(`SELECT detail_json FROM scheduler_events WHERE kind = 'jit-runner-stopped'`)
+        .toArray() as { detail_json: string }[];
+      expect(events).toHaveLength(1);
+      // SAFETY: jit-runner-stopped events are written by this scheduler with exactly these fields.
+      const detail = JSON.parse(events[0]!.detail_json) as { runnerName: string; lifetimeSeconds: number };
+      expect(detail.runnerName).toBe(queuedJob.runnerName);
+      expect(detail.lifetimeSeconds).toBeGreaterThanOrEqual(0);
+    });
+  });
+
+  it("closes the billing record for a JIT runner that dies silently", async () => {
+    const scheduler = env.RUNNER_SCHEDULER.getByName("jit-runner-silent-death");
+    const queuedJob = job("970", "cf-standard-3-job-970", "refs/pull/970/merge");
+
+    await scheduler.submit(queuedJob);
+    await provisionRunner(scheduler, queuedJob.jobId, queuedJob.runnerName, 9_701);
+
+    // Simulate a runner that expired without ever reporting runnerStopped:
+    // backdate its activity past the 30-minute silence window.
+    const stale = Date.now() - 31 * 60 * 1000;
+    await runInDurableObject(scheduler, async (_instance, state) => {
+      state.storage.sql.exec(
+        `UPDATE scheduler_jit_runners SET created_at = ?, updated_at = ? WHERE runner_name = ?`,
+        stale,
+        stale,
+        queuedJob.runnerName,
+      );
+    });
+    await runInDurableObject(scheduler, async (instance) => {
+      await instance.alarm();
+    });
+
+    await runInDurableObject(scheduler, async (_instance, state) => {
+      // SAFETY: the query selects exactly this column and every row carries it.
+      const runner = state.storage.sql
+        .exec(`SELECT expired_recorded FROM scheduler_jit_runners WHERE runner_name = ?`, queuedJob.runnerName)
+        .toArray()[0] as { expired_recorded: number };
+      expect(runner.expired_recorded).toBe(1);
+      // SAFETY: the query selects exactly this column and every row carries it.
+      const events = state.storage.sql
+        .exec(`SELECT detail_json FROM scheduler_events WHERE kind = 'jit-runner-presumed-expired'`)
+        .toArray() as { detail_json: string }[];
+      expect(events).toHaveLength(1);
+      // SAFETY: jit-runner-presumed-expired events are written by this scheduler with this field.
+      const detail = JSON.parse(events[0]!.detail_json) as { lifetimeSeconds: number };
+      expect(detail.lifetimeSeconds).toBeGreaterThanOrEqual(31 * 60);
+    });
+  });
+
   it("reconciles a running job whose in_progress webhook was lost", async () => {
     const scheduler = env.RUNNER_SCHEDULER.getByName("github-reconcile-running");
     const queuedJob = job("800", "cf-standard-3-job-800", "refs/pull/800/merge");

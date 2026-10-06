@@ -178,6 +178,8 @@ interface JitRunnerRow {
   assignment_observed: number;
   created_at: number;
   updated_at: number;
+  stopped_at: number | null;
+  expired_recorded: number;
 }
 
 interface ResourceTotals {
@@ -532,7 +534,11 @@ export class AccountRunnerScheduler extends DurableObject<WorkerEnvironment> {
     }
 
     const jitRunnerColumns = this.rows<{ name: string }>("PRAGMA table_info(scheduler_jit_runners)");
-    const jitRunnerColumnMigrations = [["github_runner_id", "INTEGER"]] as const;
+    const jitRunnerColumnMigrations = [
+      ["github_runner_id", "INTEGER"],
+      ["stopped_at", "INTEGER"],
+      ["expired_recorded", "INTEGER NOT NULL DEFAULT 0"],
+    ] as const;
     for (const [name, definition] of jitRunnerColumnMigrations) {
       if (!jitRunnerColumns.some((column) => column.name === name)) {
         this.ctx.storage.sql.exec(`ALTER TABLE scheduler_jit_runners ADD COLUMN ${name} ${definition}`);
@@ -1816,6 +1822,33 @@ export class AccountRunnerScheduler extends DurableObject<WorkerEnvironment> {
       slotId: job.slot_id ?? undefined,
       detail: stop,
     });
+    // Billing observability: Containers bill provisioned memory/disk for the
+    // whole lifetime of a JIT runner — including the idle window where it
+    // stays online waiting for GitHub to reuse it. Record the observed stop
+    // so per-runner billed seconds can be reconciled against the invoice.
+    const jitRunner = this.rows<JitRunnerRow>(
+      "SELECT * FROM scheduler_jit_runners WHERE runner_name = ?",
+      runnerName,
+    )[0];
+    if (jitRunner !== undefined) {
+      this.ctx.storage.sql.exec(
+        "UPDATE scheduler_jit_runners SET stopped_at = ?, updated_at = ? WHERE runner_name = ?",
+        timestamp,
+        timestamp,
+        runnerName,
+      );
+      this.recordEvent("jit-runner-stopped", {
+        jobId: jitRunner.assigned_job_id ?? jitRunner.source_job_id,
+        detail: {
+          runnerName,
+          lifetimeSeconds: Math.max(0, Math.round((timestamp - jitRunner.created_at) / 1000)),
+          sourceJobId: jitRunner.source_job_id,
+          assignedJobId: jitRunner.assigned_job_id,
+          exitCode: stop.exitCode,
+          reason: stop.reason,
+        },
+      });
+    }
     if (job.status === "releasing") {
       this.releaseJob(job, "completed");
       const admissions = this.admitNext();
@@ -2178,6 +2211,7 @@ export class AccountRunnerScheduler extends DurableObject<WorkerEnvironment> {
   }
 
   async alarm(): Promise<void> {
+    this.expireSilentJitRunners();
     const recoveredAdmissions = await this.recoverStoppedRunners();
     const capacityAdmissions = await this.applyScheduledCapacityUpdates();
     const admissions = [...recoveredAdmissions, ...capacityAdmissions, ...this.readyAdmissions(), ...this.admitNext()];
@@ -2194,6 +2228,39 @@ export class AccountRunnerScheduler extends DurableObject<WorkerEnvironment> {
       } catch {
         // A duplicate workflow ID means the original durable workflow is already responsible for the admission.
       }
+    }
+  }
+
+  /**
+   * A JIT runner that stops without reporting runnerStopped — idle expiry,
+   * crashed container, or orphaned reuse — would otherwise leave its billed
+   * lifetime invisible to the scheduler. Once a runner has gone quiet beyond
+   * GitHub's runner-reattach window, close the record and emit the lifetime
+   * so cost reconciliation covers silent deaths too.
+   */
+  private expireSilentJitRunners(): void {
+    const timestamp = now();
+    const staleCutoff = timestamp - 30 * 60 * 1000;
+    const stale = this.rows<JitRunnerRow>(
+      `SELECT * FROM scheduler_jit_runners
+       WHERE expired_recorded = 0 AND updated_at < ?`,
+      staleCutoff,
+    );
+    for (const runner of stale) {
+      this.ctx.storage.sql.exec(
+        "UPDATE scheduler_jit_runners SET expired_recorded = 1 WHERE runner_name = ?",
+        runner.runner_name,
+      );
+      this.recordEvent("jit-runner-presumed-expired", {
+        jobId: runner.assigned_job_id ?? runner.source_job_id,
+        detail: {
+          runnerName: runner.runner_name,
+          lifetimeSeconds: Math.max(0, Math.round(((runner.stopped_at ?? timestamp) - runner.created_at) / 1000)),
+          lastActiveAt: runner.updated_at,
+          sourceJobId: runner.source_job_id,
+          assignedJobId: runner.assigned_job_id,
+        },
+      });
     }
   }
 
