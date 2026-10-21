@@ -17,6 +17,18 @@ RUN apt-get update \
 WORKDIR /opt/actions-runner-source
 RUN git clone --depth 1 --branch "v${RUNNER_VERSION}" https://github.com/actions/runner.git . \
   && test "$(git rev-parse HEAD)" = "${RUNNER_SOURCE_REVISION}"
+# gss-labo: 上流 actions/runner#4777（merge d1d30d1f1c3c4e21cd4fadd69f6683bae1eb6084）の先取り。
+# 2.338.0 の Pkcs / Asn1 10.0.12 も GHSA-2fmv-rv2c-59x7 / GHSA-846f-f764-76mx（2026-10-13 公開、修正版 10.0.13）の
+# 対象で NuGet restore が落ちるため、src/Sdk/Sdk.csproj のこの 2 パッケージの版だけを 10.0.13 に上げる。
+# 置換前の 10.0.12 が 2 件見つからない・置換後の 10.0.13 が 2 件でない場合はビルドを落とす。
+# actions runner を 2.339.0 以降（#4777 を含むリリース）に上げたらこの段を外す。
+RUN set -eu \
+  && csproj=src/Sdk/Sdk.csproj \
+  && pinned='<PackageReference Include="System\.(Security\.Cryptography\.Pkcs|Formats\.Asn1)" Version="' \
+  && test "$(grep -cE "${pinned}10\.0\.12\" />" "$csproj")" = 2 \
+  && sed -i -E "s#(${pinned})10\.0\.12(\" />)#\\110.0.13\\3#" "$csproj" \
+  && test "$(grep -cE "${pinned}10\.0\.13\" />" "$csproj")" = 2 \
+  && test "$(grep -cE 'Include="System\.(Security\.Cryptography\.Pkcs|Formats\.Asn1)"' "$csproj")" = 2
 COPY docker/actions-runner-results-proxy.patch /tmp/actions-runner-results-proxy.patch
 RUN git apply /tmp/actions-runner-results-proxy.patch \
   && cd src \
