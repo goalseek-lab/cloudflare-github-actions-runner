@@ -89,6 +89,74 @@ RUN /home/runner/actions-runner/bin/installdependencies.sh \
   && chown runner:runner /home/runner/actions-runner \
   && chown --recursive runner:runner "${RUNNER_TOOL_CACHE}"
 
+# PostgreSQL 17（PGDG）・redis-server・gh CLI（gss-labo 追加、2026-10-21）
+# 目的: `services: postgres:17`・`sudo apt-get`・gh に依存して GitHub-hosted に残っている job
+# （realdb-migration / talk-backend / workflow-gate）を CF runner へ移せるようにする。
+# - sudo は入れない。apt ではサービスを起動・クラスタ作成させず（policy-rc.d と
+#   create_main_cluster = false）、job が runner ユーザーで $RUNNER_TEMP 配下に起動する。
+# - initdb / pg_ctl / postgres 等サーバー側のバイナリは /usr/lib/postgresql/17/bin。
+#   PATH の末尾に足す（psql / createdb / dropdb は /usr/bin の pg_wrapper でも 17 が選ばれる）。
+#   起動例（手順と検査の正本は .github/scripts/cf-runner-native-services-check.sh）:
+#     initdb -D "$RUNNER_TEMP/pgdata" -U postgres -E UTF8 --no-locale -A trust \
+#       -c listen_addresses=127.0.0.1 -c port=5432 \
+#       -c unix_socket_directories="$RUNNER_TEMP/pgsock" -c dynamic_shared_memory_type=mmap
+#     pg_ctl -D "$RUNNER_TEMP/pgdata" -l "$RUNNER_TEMP/postgres.log" -w start
+#     redis-server --bind 127.0.0.1 --port <一時 port> --save '' --appendonly no --daemonize yes
+# - 署名鍵は主鍵の指紋を照合してから信頼する。GitHub CLI の keyring は旧鍵（2026-09-05 失効）と
+#   現行の署名鍵の 2 本入り。どちらかの鍵が差し替わったらビルドが落ちるので、指紋を確かめて更新する。
+# - PostgreSQL はメジャー 17 に固定（CI の `services: postgres:17` と揃える。マイナーは PGDG の最新）。
+ARG POSTGRES_MAJOR=17
+ARG PGDG_KEY_FINGERPRINT=B97B0AFCAA1A47F044F244A07FCC7D46ACCC4CF8
+ARG GH_CLI_KEY_FINGERPRINTS="2C6106201985B60E6C7AC87323F3D4EA75716059 7F38BBB59D064DBCB3D84D725612B36462313325"
+RUN set -eu \
+  && created_policy_rc_d=0 \
+  && if [ ! -e /usr/sbin/policy-rc.d ]; then \
+    printf '#!/bin/sh\nexit 101\n' > /usr/sbin/policy-rc.d \
+    && chmod 0755 /usr/sbin/policy-rc.d \
+    && created_policy_rc_d=1; \
+  fi \
+  && apt-get update \
+  && apt-get install --yes --no-install-recommends gpg \
+  && install --directory --mode 0755 /etc/apt/keyrings \
+  && curl --fail --location --retry 3 \
+    --output /etc/apt/keyrings/postgresql-pgdg.asc \
+    https://www.postgresql.org/media/keys/ACCC4CF8.asc \
+  && curl --fail --location --retry 3 \
+    --output /etc/apt/keyrings/githubcli-archive-keyring.gpg \
+    https://cli.github.com/packages/githubcli-archive-keyring.gpg \
+  && export GNUPGHOME="$(mktemp -d)" \
+  && primary_fingerprints() { \
+    gpg --show-keys --with-colons "$1" \
+      | awk -F: '$1 == "pub" { want = 1; next } want && $1 == "fpr" { print $10; want = 0 }' \
+      | sort | tr '\n' ' ' | sed 's/ $//'; \
+  } \
+  && test "$(primary_fingerprints /etc/apt/keyrings/postgresql-pgdg.asc)" = "${PGDG_KEY_FINGERPRINT}" \
+  && test "$(primary_fingerprints /etc/apt/keyrings/githubcli-archive-keyring.gpg)" = "${GH_CLI_KEY_FINGERPRINTS}" \
+  && rm -rf "$GNUPGHOME" \
+  && unset GNUPGHOME \
+  && codename="$(. /etc/os-release && echo "$VERSION_CODENAME")" \
+  && printf 'Types: deb\nURIs: https://apt.postgresql.org/pub/repos/apt\nSuites: %s-pgdg\nComponents: main\nSigned-By: /etc/apt/keyrings/postgresql-pgdg.asc\n' \
+    "$codename" > /etc/apt/sources.list.d/pgdg.sources \
+  && printf 'Types: deb\nURIs: https://cli.github.com/packages\nSuites: stable\nComponents: main\nArchitectures: %s\nSigned-By: /etc/apt/keyrings/githubcli-archive-keyring.gpg\n' \
+    "$(dpkg --print-architecture)" > /etc/apt/sources.list.d/github-cli.sources \
+  && apt-get update \
+  && apt-get install --yes --no-install-recommends postgresql-common \
+  && sed -ri 's/^#?[[:space:]]*create_main_cluster[[:space:]]*=.*/create_main_cluster = false/' \
+    /etc/postgresql-common/createcluster.conf \
+  && grep -qx 'create_main_cluster = false' /etc/postgresql-common/createcluster.conf \
+  && apt-get install --yes --no-install-recommends \
+    "postgresql-${POSTGRES_MAJOR}" \
+    "postgresql-client-${POSTGRES_MAJOR}" \
+    redis-server \
+    gh \
+  && test -x "/usr/lib/postgresql/${POSTGRES_MAJOR}/bin/initdb" \
+  && test -x "/usr/lib/postgresql/${POSTGRES_MAJOR}/bin/pg_ctl" \
+  && test ! -e "/var/lib/postgresql/${POSTGRES_MAJOR}/main" \
+  && if [ "$created_policy_rc_d" = 1 ]; then rm /usr/sbin/policy-rc.d; fi \
+  && rm -rf /var/lib/apt/lists/*
+
+ENV PATH="${PATH}:/usr/lib/postgresql/${POSTGRES_MAJOR}/bin"
+
 COPY --chown=runner:runner docker/start-runner.sh /home/runner/start-runner.sh
 COPY --chown=runner:runner docker/invalid-runner-hook.sh /home/runner/invalid-runner-hook.sh
 COPY --chown=runner:runner docker/job-started-hook.sh /home/runner/job-started-hook.sh
