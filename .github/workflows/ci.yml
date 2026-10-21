@@ -7,6 +7,9 @@ on:
   # the approval gate before it is allowed to use paid Cloudflare compute.
   pull_request_target:
     branches: [main]
+  # goalseek-lab: main は merge queue 経由でのみ更新する（gss-labo と同じ運用、2026-10-21）。
+  # merge_group では pull_request_target 以外なので承認ゲートは素通しになる。
+  merge_group:
 
 permissions:
   actions: read
@@ -140,14 +143,5 @@ jobs:
       - name: Build and check runner image size
         run: ./tests/runner-image-size.sh
 
-  publish:
-    needs:
-      - ci
-      - runner-image-size
-    if: >-
-      github.event_name == 'push' &&
-      github.ref == 'refs/heads/main'
-    uses: ./.github/workflows/publish.yml
-    permissions:
-      contents: write
-      id-token: write
+  # goalseek-lab: この fork は npm に公開しない（runner イメージのビルド元としてだけ使う）。
+  # 上流の publish job（npm publish と GitHub Release）は外した。
