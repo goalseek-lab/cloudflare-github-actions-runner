@@ -1,7 +1,10 @@
 FROM ubuntu:24.04 AS runner-builder
 
-ARG RUNNER_VERSION=2.336.0
-ARG RUNNER_SOURCE_REVISION=98aabcd429c4e8402406c56ce2d26387fed3b9ce
+# gss-labo: 2.336.0 は Sdk.csproj の System.Security.Cryptography.Pkcs 10.0.7 に脆弱性勧告（GHSA-2fmv-rv2c-59x7 /
+# GHSA-846f-f764-76mx）が出て NuGet restore が NU1902/NU1903（警告をエラー扱い）で落ち、再ビルドできなくなった
+# （2026-10-21）。Pkcs 10.0.12 の 2.338.0 に上げる。NuGetAudit を切って古い版のまま通すことはしない。
+ARG RUNNER_VERSION=2.338.0
+ARG RUNNER_SOURCE_REVISION=197ca027b90de199464dee3bb9ff198a1db60967
 
 RUN apt-get update \
   && apt-get install --yes --no-install-recommends \
@@ -32,7 +35,7 @@ RUN test -x /opt/actions-runner-source/_layout/externals/node20/bin/node \
 
 FROM ubuntu:24.04
 
-ARG RUNNER_VERSION=2.336.0
+ARG RUNNER_VERSION=2.338.0
 ARG NODE_VERSION=22.23.2
 ARG NODE_SHA256=d60acfe00a2932254bb0ad20e01b0d74397a0875595de719654b214f4b03f307
 
@@ -106,8 +109,8 @@ RUN /home/runner/actions-runner/bin/installdependencies.sh \
 #   現行の署名鍵の 2 本入り。どちらかの鍵が差し替わったらビルドが落ちるので、指紋を確かめて更新する。
 # - PostgreSQL はメジャー 17 に固定（CI の `services: postgres:17` と揃える。マイナーは PGDG の最新）。
 ARG POSTGRES_MAJOR=17
-ARG PGDG_KEY_FINGERPRINT=B97B0AFCAA1A47F044F244A07FCC7D46ACCC4CF8
-ARG GH_CLI_KEY_FINGERPRINTS="2C6106201985B60E6C7AC87323F3D4EA75716059 7F38BBB59D064DBCB3D84D725612B36462313325"
+ARG PGDG_SIGNING_FPR=B97B0AFCAA1A47F044F244A07FCC7D46ACCC4CF8
+ARG GH_CLI_SIGNING_FPRS="2C6106201985B60E6C7AC87323F3D4EA75716059 7F38BBB59D064DBCB3D84D725612B36462313325"
 RUN set -eu \
   && created_policy_rc_d=0 \
   && if [ ! -e /usr/sbin/policy-rc.d ]; then \
@@ -130,8 +133,8 @@ RUN set -eu \
       | awk -F: '$1 == "pub" { want = 1; next } want && $1 == "fpr" { print $10; want = 0 }' \
       | sort | tr '\n' ' ' | sed 's/ $//'; \
   } \
-  && test "$(primary_fingerprints /etc/apt/keyrings/postgresql-pgdg.asc)" = "${PGDG_KEY_FINGERPRINT}" \
-  && test "$(primary_fingerprints /etc/apt/keyrings/githubcli-archive-keyring.gpg)" = "${GH_CLI_KEY_FINGERPRINTS}" \
+  && test "$(primary_fingerprints /etc/apt/keyrings/postgresql-pgdg.asc)" = "${PGDG_SIGNING_FPR}" \
+  && test "$(primary_fingerprints /etc/apt/keyrings/githubcli-archive-keyring.gpg)" = "${GH_CLI_SIGNING_FPRS}" \
   && rm -rf "$GNUPGHOME" \
   && unset GNUPGHOME \
   && codename="$(. /etc/os-release && echo "$VERSION_CODENAME")" \
