@@ -131,7 +131,7 @@ jobs:
         run: npm pack --dry-run
 
   runner-image-size:
-    name: Runner image under 1.5 GB
+    name: Runner image under 2.0 GB
     needs: approve-cloudflare-ci
     runs-on: ubuntu-latest
     timeout-minutes: 30

@@ -111,8 +111,9 @@ RUN /home/runner/actions-runner/bin/installdependencies.sh \
 #   create_main_cluster = false）、job が runner ユーザーで $RUNNER_TEMP 配下に起動する。
 # - initdb / pg_ctl / postgres 等サーバー側のバイナリは /usr/lib/postgresql/17/bin。
 #   PATH の末尾に足す（psql / createdb / dropdb は /usr/bin の pg_wrapper でも 17 が選ばれる）。
-#   起動例（手順と検査の正本は .github/scripts/cf-runner-native-services-check.sh）:
-#     initdb -D "$RUNNER_TEMP/pgdata" -U postgres -E UTF8 --no-locale -A trust \
+#   起動例（手順の正本は .github/scripts/ci-start-native-postgres.sh。照合は本番と同じ ICU の en-US）:
+#     initdb -D "$RUNNER_TEMP/pgdata" -U postgres -E UTF8 -A trust \
+#       --locale-provider=icu --icu-locale=en-US --locale=C.UTF-8 \
 #       -c listen_addresses=127.0.0.1 -c port=5432 \
 #       -c unix_socket_directories="$RUNNER_TEMP/pgsock" -c dynamic_shared_memory_type=mmap
 #     pg_ctl -D "$RUNNER_TEMP/pgdata" -l "$RUNNER_TEMP/postgres.log" -w start
@@ -171,6 +172,30 @@ RUN set -eu \
   && rm -rf /var/lib/apt/lists/*
 
 ENV PATH="${PATH}:/usr/lib/postgresql/${POSTGRES_MAJOR}/bin"
+
+# ffmpeg・python3-venv（gss-labo 追加、2026-10-28。docs/plans/2026-10-28-deal-unit-cf-runner.md）
+# 目的: Deal の単体テスト（ci.yml の deal-unit）を CF runner へ移す。試験は実物の /usr/bin/ffmpeg・ffprobe で
+#   Opus へ encode し、試験の前に `python3 -m venv` で pglast 等の venv を作る（sudo が無いので job の中では入れられない）。
+# - Ubuntu 正規の配布元（ubuntu.sources の archive / security）だけから入れ、上の段で足した PGDG・gh・git-core の
+#   source は読ませない（Deal の決定 186）。版は固定しない（ビルド時点の noble / -updates / -security の版になる）。
+# - 版と sha256 をビルドのログに残す。job の側でも deal-unit の確認 step が毎回 log に残す。
+# - 原因になったときにこの段だけ外せるよう、他の apt の段とは分ける。ffmpeg はデーモンを持たないので policy-rc.d は不要。
+RUN set -eu \
+  && test -f /etc/apt/sources.list.d/ubuntu.sources \
+  && ubuntu_only='-o Dir::Etc::sourcelist=/etc/apt/sources.list.d/ubuntu.sources -o Dir::Etc::sourceparts=-' \
+  && apt-get $ubuntu_only update \
+  && apt-get $ubuntu_only install --yes --no-install-recommends ffmpeg python3-venv \
+  && test -x /usr/bin/ffmpeg \
+  && test -x /usr/bin/ffprobe \
+  && /usr/bin/ffmpeg -hide_banner -encoders | grep -q ' libopus ' \
+  && venv_check="$(mktemp -d)" \
+  && python3 -m venv "$venv_check/venv" \
+  && "$venv_check/venv/bin/python3" -m pip --version \
+  && rm -rf "$venv_check" \
+  && dpkg-query --show ffmpeg python3-venv \
+  && /usr/bin/ffmpeg -version | head -n 1 \
+  && sha256sum /usr/bin/ffmpeg /usr/bin/ffprobe \
+  && rm -rf /var/lib/apt/lists/*
 
 COPY --chown=runner:runner docker/start-runner.sh /home/runner/start-runner.sh
 COPY --chown=runner:runner docker/invalid-runner-hook.sh /home/runner/invalid-runner-hook.sh
