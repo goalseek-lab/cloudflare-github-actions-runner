@@ -2,7 +2,9 @@
 
 set -euo pipefail
 
-readonly MAX_IMAGE_BYTES=1500000000
+# gss-labo: Deal の単体テスト用に ffmpeg（約 0.4 GB）を足すため、上流の 1.5 GB から 2.0 GB に上げた（2026-10-28、
+# gss-labo docs/plans/2026-10-28-deal-unit-cf-runner.md §2.4）。Cloudflare 側の制約はインスタンスのディスク以下であること。
+readonly MAX_IMAGE_BYTES=2000000000
 readonly IMAGE_TAG="cloudflare-github-actions-runner:size-test"
 readonly REPOSITORY_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
@@ -29,6 +31,6 @@ fi
 echo "Runner image size: ${image_size_bytes} bytes (limit: ${MAX_IMAGE_BYTES} bytes)"
 
 if ((image_size_bytes >= MAX_IMAGE_BYTES)); then
-  echo "Runner image must be smaller than 1.5 GB." >&2
+  echo "Runner image must be smaller than 2.0 GB." >&2
   exit 1
 fi
