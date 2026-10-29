@@ -1,0 +1,13 @@
+{
+  "schema_version": 1,
+  "created_at": "2026-10-29T04:06:16.285762+00:00",
+  "source": "claude-posttool-worktree-lifecycle",
+  "owner_kind": "claude-code",
+  "owner_session_id": "ee05e1ba-6b0d-4eb8-90a5-2105f16dcdef",
+  "owner_pid": 28508,
+  "parent_cwd": "/Users/yusukeito/.superset/worktrees/gss-labo/long-selenium",
+  "repo_root": "/Users/yusukeito/dev/cloudflare-github-actions-runner/.claude/worktrees/rollout-busy-note",
+  "worktree_path": "/Users/yusukeito/dev/cloudflare-github-actions-runner/.claude/worktrees/rollout-busy-note",
+  "branch": "gss/rollout-busy-note",
+  "cleanup_policy": "parent-or-session-end"
+}

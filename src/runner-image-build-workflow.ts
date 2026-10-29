@@ -62,6 +62,8 @@ const maximumBuildQueueRounds = 3;
 // （2026-10-28、push-2d74e354）。runner は空いて 5 分で眠るので、2 分おきに最大約 12 時間待つ。
 // 間隔は rollout の lease（5 分、試行ごとに延長）より短くする。待っている間に別の push が来た source build は、
 // lease が空かずに errored になるので、rollout の完了後に push し直す。
+// 12 時間でも空かないことがある（2026-10-29、push-be336915。standard-4 は 15 時間で CI の途切れが最長 14 分）。
+// その時は gss-labo の docs/runbooks/cf-runner-image.md の手順で CI を一時的に GitHub 側の runner へ逃がしてから push し直す。
 const maximumRolloutAttempts = 360;
 const rolloutRetryInterval = "2 minutes";
 const maximumBuilderBootstrapRolloutChecks = 360;
