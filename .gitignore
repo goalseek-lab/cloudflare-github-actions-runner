@@ -8,3 +8,8 @@ coverage/
 .agents/skills/
 .claude/skills/
 .conductor/*.log
+
+# エージェントの作業ツリーの印（git に入れない）
+.agent-owner.json
+.cleanup-candidate.json
+.claude/worktrees/
